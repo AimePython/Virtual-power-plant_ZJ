@@ -686,6 +686,12 @@ def _is_logged_in() -> bool:
     return bool(session.get("logged_in"))
 
 
+@app.after_request
+def add_no_store_cache_control(resp):
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.get("/login")
 def login_page():
     if _is_logged_in():
