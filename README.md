@@ -40,6 +40,34 @@ python3 app.py
 
 [http://127.0.0.1:8501](http://127.0.0.1:8501)
 
+## 对外发布（Render）
+
+你的代码已经在 GitHub，可直接用 Render 发布成公网地址，其他电脑可直接访问。
+
+### 一次性配置
+
+1. 打开 [Render Dashboard](https://dashboard.render.com/)
+2. 新建 `Web Service`，选择仓库：`AimePython/Virtual-power-plant_ZJ`
+3. 设置：
+   - Root Directory: `baseline_web_app`
+   - Runtime: `Python`
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `gunicorn -w 2 -k gthread --threads 4 -b 0.0.0.0:$PORT app:app`
+4. 点击 Deploy，等待构建完成
+
+部署成功后会拿到类似 `https://xxxx.onrender.com` 的网址，可在任意电脑访问。
+
+### 已准备好的部署文件
+
+- `Procfile`
+- `render.yaml`
+- `runtime.txt`
+- `requirements.txt`（已包含 `gunicorn`）
+
+### 访问控制建议（可选）
+
+- 如果担心外部随意访问，建议再加一层登录密码（Basic Auth）或仅对内网/白名单开放。
+
 ## 备注
 
 - 若响应日前最近日期数据不完整（例如缺少临近几天），工具会使用文件中可用日期内满足规则的最近参考日进行计算。
