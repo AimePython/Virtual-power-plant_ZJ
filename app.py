@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import io
 import os
+import sqlite3
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from functools import wraps
 
 import numpy as np
 import pandas as pd
 from flask import Flask, redirect, render_template_string, request, send_file, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 HOME_HTML = """
 <!doctype html>
@@ -33,7 +39,14 @@ HOME_HTML = """
   </style>
 </head>
 <body>
-  <h1>基线测算网页</h1>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+    <h1>基线测算网页</h1>
+    <div style="font-size:13px;color:#4b5563;">
+      当前用户：<b>{{ current_user.username }}</b>
+      <a href="{{ url_for('workspace') }}" style="margin-left:10px;">我的空间</a>
+      <a href="{{ url_for('logout') }}" style="margin-left:10px;">退出</a>
+    </div>
+  </div>
   <div class="sub">上传数据后可下载结果，也可进入在线看板勾选单元格自动求和。</div>
 
   <div class="card">
@@ -138,14 +151,126 @@ LOGIN_HTML = """
 <body>
   <div class="wrap">
     <h2>登录基线测算工具</h2>
-    <div class="sub">请输入访问密码</div>
+    <div class="sub">请输入账号密码</div>
     <form method="post" action="{{ url_for('login') }}">
+      <label>用户名</label>
+      <input type="text" name="username" required />
       <label>密码</label>
       <input type="password" name="password" required />
       <button type="submit">登录</button>
     </form>
+    <div style="margin-top:10px;font-size:13px;">
+      没有账号？<a href="{{ url_for('register_page') }}">注册</a>
+    </div>
     {% if message %}<div class="err">{{ message }}</div>{% endif %}
   </div>
+</body>
+</html>
+"""
+
+REGISTER_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>注册 - 基线测算工具</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "PingFang SC", sans-serif; background:#f3f4f6; margin:0; }
+    .wrap { max-width: 420px; margin: 10vh auto; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; }
+    h2 { margin:0 0 6px; }
+    .sub { color:#6b7280; font-size:13px; margin-bottom:14px; }
+    label { display:block; font-weight:600; margin-bottom:6px; }
+    input, button { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; font-size:14px; }
+    input { border:1px solid #d1d5db; margin-bottom:10px; }
+    button { border:none; background:#2563eb; color:#fff; font-weight:700; cursor:pointer; }
+    .err { margin-top:10px; padding:8px 10px; border-radius:8px; color:#991b1b; background:#fef2f2; border:1px solid #fecaca; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>注册账号</h2>
+    <div class="sub">注册后可拥有独立测算空间</div>
+    <form method="post" action="{{ url_for('register') }}">
+      <label>用户名</label>
+      <input type="text" name="username" minlength="3" required />
+      <label>密码</label>
+      <input type="password" name="password" minlength="6" required />
+      <button type="submit">注册并登录</button>
+    </form>
+    <div style="margin-top:10px;font-size:13px;">
+      已有账号？<a href="{{ url_for('login_page') }}">去登录</a>
+    </div>
+    {% if message %}<div class="err">{{ message }}</div>{% endif %}
+  </div>
+</body>
+</html>
+"""
+
+WORKSPACE_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>我的空间</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "PingFang SC", sans-serif; margin: 24px; color: #111827; }
+    .top { display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px; }
+    .btn { background:#2563eb;color:#fff;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:600; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border:1px solid #e5e7eb; padding:8px 10px; text-align:left; }
+    th { background:#f3f4f6; }
+    .muted { color:#6b7280; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <h2 style="margin:0;">我的空间</h2>
+      <div class="muted">用户：{{ current_user.username }}（仅显示你的任务和结果）</div>
+    </div>
+    <div>
+      <a class="btn" href="{{ url_for('home') }}">返回首页</a>
+      <a class="btn" href="{{ url_for('logout') }}" style="margin-left:8px;background:#374151;">退出</a>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>类型</th>
+        <th>目标日</th>
+        <th>粒度</th>
+        <th>状态</th>
+        <th>文件</th>
+        <th>下载</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td>{{ j.created_at }}</td>
+        <td>{{ j.kind }}</td>
+        <td>{{ j.target_date }}</td>
+        <td>{{ j.granularity }}</td>
+        <td>{{ j.status }}</td>
+        <td>{{ j.input_filename }}</td>
+        <td>
+          {% if j.result_file %}
+            <a href="{{ url_for('download_job_result', job_id=j.id) }}">下载结果</a>
+          {% else %}
+            -
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not jobs %}
+      <tr><td colspan="7" class="muted">暂无任务记录</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
 </body>
 </html>
 """
@@ -676,14 +801,130 @@ def build_dashboard_payload(res: dict, target: pd.Timestamp, granularity: str):
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 app.secret_key = os.environ.get("APP_SECRET_KEY", "baseline-web-app-dev-secret")
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
+DB_PATH = DATA_DIR / "app.db"
 
 
-def _app_password() -> str:
-    return os.environ.get("APP_PASSWORD", "changeme123")
+def _db_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _db_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                response_type TEXT NOT NULL,
+                granularity TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_filename TEXT,
+                input_path TEXT,
+                result_path TEXT,
+                created_at TEXT NOT NULL,
+                error TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.commit()
+
+    admin_user = os.environ.get("ADMIN_USERNAME", "admin")
+    admin_pass = os.environ.get("ADMIN_PASSWORD", "admin123456")
+    with _db_conn() as conn:
+        exists = conn.execute("SELECT id FROM users WHERE username = ?", (admin_user,)).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'admin', ?)",
+                (admin_user, generate_password_hash(admin_pass), datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+
+
+def _get_user_by_username(username: str):
+    with _db_conn() as conn:
+        return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+
+def _create_user(username: str, password: str):
+    with _db_conn() as conn:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'user', ?)",
+            (username, generate_password_hash(password), datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+
+
+def _current_user():
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    with _db_conn() as conn:
+        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
 
 def _is_logged_in() -> bool:
-    return bool(session.get("logged_in"))
+    return bool(session.get("user_id"))
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not _is_logged_in():
+            return redirect(url_for("login_page"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _user_dir(user_id: int) -> Path:
+    d = DATA_DIR / "users" / str(user_id)
+    (d / "uploads").mkdir(parents=True, exist_ok=True)
+    (d / "results").mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _create_job(user_id: int, kind: str, target_date: str, response_type: str, granularity: str, input_filename: str, input_path: str):
+    with _db_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO jobs (user_id, kind, target_date, response_type, granularity, status, input_filename, input_path, created_at)
+            VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)
+            """,
+            (user_id, kind, target_date, response_type, granularity, input_filename, input_path, datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def _finish_job(job_id: int, status: str, result_path: str | None = None, error: str | None = None):
+    with _db_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = ?, result_path = ?, error = ? WHERE id = ?",
+            (status, result_path, error, job_id),
+        )
+        conn.commit()
+
+
+_init_db()
 
 
 @app.after_request
@@ -699,13 +940,41 @@ def login_page():
     return render_template_string(LOGIN_HTML, message=None)
 
 
+@app.get("/register")
+def register_page():
+    if _is_logged_in():
+        return redirect(url_for("home"))
+    return render_template_string(REGISTER_HTML, message=None)
+
+
+@app.post("/register")
+def register():
+    username = (request.form.get("username", "") or "").strip()
+    password = request.form.get("password", "") or ""
+    if len(username) < 3:
+        return render_template_string(REGISTER_HTML, message="用户名至少3位。")
+    if len(password) < 6:
+        return render_template_string(REGISTER_HTML, message="密码至少6位。")
+    try:
+        _create_user(username, password)
+    except sqlite3.IntegrityError:
+        return render_template_string(REGISTER_HTML, message="用户名已存在，请换一个。")
+    user = _get_user_by_username(username)
+    session["user_id"] = int(user["id"])
+    session["username"] = user["username"]
+    return redirect(url_for("home"))
+
+
 @app.post("/login")
 def login():
+    username = (request.form.get("username", "") or "").strip()
     password = request.form.get("password", "")
-    if password == _app_password():
-        session["logged_in"] = True
+    user = _get_user_by_username(username)
+    if user and check_password_hash(user["password_hash"], password):
+        session["user_id"] = int(user["id"])
+        session["username"] = user["username"]
         return redirect(url_for("home"))
-    return render_template_string(LOGIN_HTML, message="密码错误，请重试。")
+    return render_template_string(LOGIN_HTML, message="用户名或密码错误，请重试。")
 
 
 @app.get("/logout")
@@ -715,52 +984,126 @@ def logout():
 
 
 @app.get("/")
+@login_required
 def home():
-    if not _is_logged_in():
-        return redirect(url_for("login_page"))
-    return render_template_string(HOME_HTML, message=None, ok=True, default_date=pd.Timestamp.today().strftime("%Y-%m-%d"))
+    return render_template_string(
+        HOME_HTML,
+        message=None,
+        ok=True,
+        default_date=pd.Timestamp.today().strftime("%Y-%m-%d"),
+        current_user=_current_user(),
+    )
+
+
+@app.get("/workspace")
+@login_required
+def workspace():
+    user = _current_user()
+    with _db_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kind, target_date, granularity, status, input_filename, result_path, created_at
+            FROM jobs WHERE user_id = ? ORDER BY id DESC
+            """,
+            (int(user["id"]),),
+        ).fetchall()
+    jobs = []
+    for r in rows:
+        jobs.append(
+            {
+                "id": r["id"],
+                "kind": r["kind"],
+                "target_date": r["target_date"],
+                "granularity": r["granularity"],
+                "status": r["status"],
+                "input_filename": r["input_filename"] or "-",
+                "result_file": bool(r["result_path"]),
+                "created_at": (r["created_at"] or "")[:19].replace("T", " "),
+            }
+        )
+    return render_template_string(WORKSPACE_HTML, jobs=jobs, current_user=user)
+
+
+@app.get("/jobs/<int:job_id>/download")
+@login_required
+def download_job_result(job_id: int):
+    user = _current_user()
+    with _db_conn() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, int(user["id"]))).fetchone()
+    if not row or not row["result_path"]:
+        return "结果不存在或无权限。", 404
+    p = Path(row["result_path"])
+    if not p.exists():
+        return "结果文件不存在。", 404
+    return send_file(p, as_attachment=True, download_name=p.name)
 
 
 @app.post("/calculate")
+@login_required
 def calculate():
-    if not _is_logged_in():
-        return redirect(url_for("login_page"))
     file = request.files.get("file")
     target_date = request.form.get("target_date", "").strip()
     response_type = request.form.get("response_type", "positive").strip()
     output_granularity = request.form.get("output_granularity", "48").strip()
+    user = _current_user()
     if not file or not file.filename:
-        return render_template_string(HOME_HTML, message="请先上传 Excel 文件。", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"))
+        return render_template_string(HOME_HTML, message="请先上传 Excel 文件。", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"), current_user=user)
     try:
         target = pd.Timestamp(target_date)
-        raw = pd.read_excel(file, sheet_name=0)
+        user_dir = _user_dir(int(user["id"]))
+        upload_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{file.filename}"
+        upload_path = user_dir / "uploads" / upload_name
+        file.save(upload_path)
+        job_id = _create_job(int(user["id"]), "calculate", target.strftime("%Y-%m-%d"), response_type, output_granularity, file.filename, str(upload_path))
+        raw = pd.read_excel(upload_path, sheet_name=0)
         norm = normalize_input_df(raw)
         output = build_result_workbook(norm, target, response_type, output_granularity)
         fname = f"基线测算结果_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=fname)
+        result_name = f"job_{job_id}_{fname}"
+        result_path = user_dir / "results" / result_name
+        result_bytes = output.getvalue()
+        result_path.write_bytes(result_bytes)
+        _finish_job(job_id, "done", str(result_path), None)
+        return send_file(io.BytesIO(result_bytes), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=fname)
     except Exception as exc:
-        return render_template_string(HOME_HTML, message=f"测算失败：{exc}", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"))
+        try:
+            if "job_id" in locals():
+                _finish_job(job_id, "failed", None, str(exc))
+        except Exception:
+            pass
+        return render_template_string(HOME_HTML, message=f"测算失败：{exc}", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"), current_user=user)
 
 
 @app.post("/dashboard")
+@login_required
 def dashboard():
-    if not _is_logged_in():
-        return redirect(url_for("login_page"))
     file = request.files.get("file")
     target_date = request.form.get("target_date", "").strip()
     response_type = request.form.get("response_type", "positive").strip()
     granularity = request.form.get("board_granularity", "48").strip()
+    user = _current_user()
     if not file or not file.filename:
-        return render_template_string(HOME_HTML, message="请先上传 Excel 文件。", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"))
+        return render_template_string(HOME_HTML, message="请先上传 Excel 文件。", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"), current_user=user)
     try:
         target = pd.Timestamp(target_date)
-        raw = pd.read_excel(file, sheet_name=0)
+        user_dir = _user_dir(int(user["id"]))
+        upload_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{file.filename}"
+        upload_path = user_dir / "uploads" / upload_name
+        file.save(upload_path)
+        job_id = _create_job(int(user["id"]), "dashboard", target.strftime("%Y-%m-%d"), response_type, granularity, file.filename, str(upload_path))
+        raw = pd.read_excel(upload_path, sheet_name=0)
         norm = normalize_input_df(raw)
         res = compute_baseline_data(norm, target, response_type)
         payload = build_dashboard_payload(res, target, granularity if granularity in ("48", "96") else "48")
+        _finish_job(job_id, "done", None, None)
         return render_template_string(BOARD_HTML, payload=payload, meta=payload["meta"])
     except Exception as exc:
-        return render_template_string(HOME_HTML, message=f"生成看板失败：{exc}", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"))
+        try:
+            if "job_id" in locals():
+                _finish_job(job_id, "failed", None, str(exc))
+        except Exception:
+            pass
+        return render_template_string(HOME_HTML, message=f"生成看板失败：{exc}", ok=False, default_date=target_date or pd.Timestamp.today().strftime("%Y-%m-%d"), current_user=user)
 
 
 if __name__ == "__main__":
