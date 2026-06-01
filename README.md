@@ -67,6 +67,15 @@ python3 app.py
 ### 访问控制建议（可选）
 
 - 如果担心外部随意访问，建议再加一层登录密码（Basic Auth）或仅对内网/白名单开放。
+- 当前版本已内置登录页，可通过环境变量配置密码：
+  - `APP_PASSWORD`：登录密码（必配，建议设置强密码）
+  - `APP_SECRET_KEY`：会话签名密钥（建议配置随机长字符串）
+  - 本地示例：
+    ```bash
+    export APP_PASSWORD='你的强密码'
+    export APP_SECRET_KEY='随机长字符串'
+    python3 app.py
+    ```
 
 ## 备注
 

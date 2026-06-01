@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from flask import Flask, render_template_string, request, send_file, url_for
+from flask import Flask, redirect, render_template_string, request, send_file, session, url_for
 
 HOME_HTML = """
 <!doctype html>
@@ -112,6 +112,40 @@ HOME_HTML = """
   {% if message %}
     <div class="msg {{ 'ok' if ok else 'err' }}">{{ message }}</div>
   {% endif %}
+</body>
+</html>
+"""
+
+LOGIN_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>登录 - 基线测算工具</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "PingFang SC", sans-serif; background:#f3f4f6; margin:0; }
+    .wrap { max-width: 420px; margin: 10vh auto; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; }
+    h2 { margin:0 0 6px; }
+    .sub { color:#6b7280; font-size:13px; margin-bottom:14px; }
+    label { display:block; font-weight:600; margin-bottom:6px; }
+    input, button { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; font-size:14px; }
+    input { border:1px solid #d1d5db; margin-bottom:10px; }
+    button { border:none; background:#2563eb; color:#fff; font-weight:700; cursor:pointer; }
+    .err { margin-top:10px; padding:8px 10px; border-radius:8px; color:#991b1b; background:#fef2f2; border:1px solid #fecaca; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>登录基线测算工具</h2>
+    <div class="sub">请输入访问密码</div>
+    <form method="post" action="{{ url_for('login') }}">
+      <label>密码</label>
+      <input type="password" name="password" required />
+      <button type="submit">登录</button>
+    </form>
+    {% if message %}<div class="err">{{ message }}</div>{% endif %}
+  </div>
 </body>
 </html>
 """
@@ -641,15 +675,50 @@ def build_dashboard_payload(res: dict, target: pd.Timestamp, granularity: str):
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+app.secret_key = os.environ.get("APP_SECRET_KEY", "baseline-web-app-dev-secret")
+
+
+def _app_password() -> str:
+    return os.environ.get("APP_PASSWORD", "changeme123")
+
+
+def _is_logged_in() -> bool:
+    return bool(session.get("logged_in"))
+
+
+@app.get("/login")
+def login_page():
+    if _is_logged_in():
+        return redirect(url_for("home"))
+    return render_template_string(LOGIN_HTML, message=None)
+
+
+@app.post("/login")
+def login():
+    password = request.form.get("password", "")
+    if password == _app_password():
+        session["logged_in"] = True
+        return redirect(url_for("home"))
+    return render_template_string(LOGIN_HTML, message="密码错误，请重试。")
+
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
 
 
 @app.get("/")
 def home():
+    if not _is_logged_in():
+        return redirect(url_for("login_page"))
     return render_template_string(HOME_HTML, message=None, ok=True, default_date=pd.Timestamp.today().strftime("%Y-%m-%d"))
 
 
 @app.post("/calculate")
 def calculate():
+    if not _is_logged_in():
+        return redirect(url_for("login_page"))
     file = request.files.get("file")
     target_date = request.form.get("target_date", "").strip()
     response_type = request.form.get("response_type", "positive").strip()
@@ -669,6 +738,8 @@ def calculate():
 
 @app.post("/dashboard")
 def dashboard():
+    if not _is_logged_in():
+        return redirect(url_for("login_page"))
     file = request.files.get("file")
     target_date = request.form.get("target_date", "").strip()
     response_type = request.form.get("response_type", "positive").strip()
