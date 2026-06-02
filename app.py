@@ -360,7 +360,8 @@ BOARD_HTML = """
     const selectedSumEl = document.getElementById('selected-sum');
     const visibleCountEl = document.getElementById('visible-count');
 
-    const selectedCells = new Set();
+    // 默认全部色块都参与计算；这里只记录“被取消(去色)”的色块
+    const deselectedCells = new Set();
     const state = {
       operators: new Set(payload.operators),
       accounts: new Set(payload.accounts.map(a => a.key)),
@@ -371,6 +372,19 @@ BOARD_HTML = """
 
     function cellId(ti, ai){ return `${ti}|${ai}`; }
     function fmt(v){ return Number(v).toFixed(2); }
+    function isCellSelected(ti, ai){ return !deselectedCells.has(cellId(ti, ai)); }
+
+    function getVisibleAccountIdx(){
+      return payload.accounts
+        .map((a, i) => ({...a, i}))
+        .filter(a => state.operators.has(a.operator) && state.accounts.has(a.key));
+    }
+
+    function getVisibleTimes(){
+      return payload.times
+        .map((t, i) => ({t, i}))
+        .filter(x => state.times.has(x.t));
+    }
 
     function renderOperatorFilter(){
       operatorList.innerHTML = '';
@@ -443,12 +457,16 @@ BOARD_HTML = """
     function recalcSelected() {
       let sum = 0;
       let count = 0;
-      selectedCells.forEach(id => {
-        const [ti, ai] = id.split('|').map(Number);
-        if(payload.matrix[ti] && payload.matrix[ti][ai] !== undefined){
-          sum += Number(payload.matrix[ti][ai]);
-          count += 1;
-        }
+      const acctIdx = getVisibleAccountIdx();
+      const visibleTimes = getVisibleTimes();
+      visibleTimes.forEach(({i: ti}) => {
+        acctIdx.forEach(a => {
+          if(!isCellSelected(ti, a.i)) return;
+          if(payload.matrix[ti] && payload.matrix[ti][a.i] !== undefined){
+            sum += Number(payload.matrix[ti][a.i]);
+            count += 1;
+          }
+        });
       });
       selectedCountEl.textContent = count;
       selectedSumEl.textContent = fmt(sum);
@@ -456,23 +474,14 @@ BOARD_HTML = """
 
     function toggleCell(td, ti, ai){
       const id = cellId(ti, ai);
-      if(selectedCells.has(id)){
-        selectedCells.delete(id);
-        td.classList.remove('selected');
-      }else{
-        selectedCells.add(id);
-        td.classList.add('selected');
-      }
+      if(isCellSelected(ti, ai)){ deselectedCells.add(id); td.classList.remove('selected'); }
+      else{ deselectedCells.delete(id); td.classList.add('selected'); }
       recalcSelected();
     }
 
     function renderTable(){
-      const acctIdx = payload.accounts
-        .map((a, i) => ({...a, i}))
-        .filter(a => state.operators.has(a.operator) && state.accounts.has(a.key));
-      const visibleTimes = payload.times
-        .map((t, i) => ({t, i}))
-        .filter(x => state.times.has(x.t));
+      const acctIdx = getVisibleAccountIdx();
+      const visibleTimes = getVisibleTimes();
       visibleCountEl.textContent = acctIdx.length;
 
       let html = '';
@@ -483,17 +492,20 @@ BOARD_HTML = """
       html += '<th class="sum-col" rowspan="2">申报值(MW)</th>';
       html += '</tr>';
       html += '<tr class="acct-row">';
-      acctIdx.forEach(a => { html += `<th><input class="col-check" type="checkbox" data-col="${a.i}">${a.key}</th>`; });
+      acctIdx.forEach(a => {
+        const colChecked = visibleTimes.every(({i: ti}) => isCellSelected(ti, a.i));
+        html += `<th><input class="col-check" type="checkbox" data-col="${a.i}" ${colChecked ? 'checked' : ''}>${a.key}</th>`;
+      });
       html += '</tr></thead><tbody>';
 
       visibleTimes.forEach(({t, i: ti}) => {
-        html += `<tr><th class="time-col"><input class="row-check" type="checkbox" data-row="${ti}">${t}</th>`;
+        const rowChecked = acctIdx.every(a => isCellSelected(ti, a.i));
+        html += `<tr><th class="time-col"><input class="row-check" type="checkbox" data-row="${ti}" ${rowChecked ? 'checked' : ''}>${t}</th>`;
         let rowSum = 0;
         acctIdx.forEach(a => {
           const val = payload.matrix[ti][a.i];
-          const id = cellId(ti, a.i);
-          const cls = selectedCells.has(id) ? 'num selected' : 'num';
-          rowSum += Number(val);
+          const cls = isCellSelected(ti, a.i) ? 'num selected' : 'num';
+          if(isCellSelected(ti, a.i)) rowSum += Number(val);
           html += `<td class="${cls}" data-ti="${ti}" data-ai="${a.i}">${fmt(val)}</td>`;
         });
         const coef = Number(bidCoefByTime[ti] ?? 100);
@@ -515,10 +527,10 @@ BOARD_HTML = """
           acctIdx.forEach(a => {
             const td = table.querySelector(`td[data-ti="${ti}"][data-ai="${a.i}"]`);
             const id = cellId(ti, a.i);
-            if(e.target.checked && !selectedCells.has(id)){ selectedCells.add(id); td.classList.add('selected'); }
-            if(!e.target.checked && selectedCells.has(id)){ selectedCells.delete(id); td.classList.remove('selected'); }
+            if(e.target.checked){ deselectedCells.delete(id); td.classList.add('selected'); }
+            else{ deselectedCells.add(id); td.classList.remove('selected'); }
           });
-          recalcSelected();
+          renderTable();
         });
       });
       table.querySelectorAll('.col-check').forEach(chk => {
@@ -528,10 +540,10 @@ BOARD_HTML = """
             const td = table.querySelector(`td[data-ti="${ti}"][data-ai="${ai}"]`);
             if(!td) return;
             const id = cellId(ti, ai);
-            if(e.target.checked && !selectedCells.has(id)){ selectedCells.add(id); td.classList.add('selected'); }
-            if(!e.target.checked && selectedCells.has(id)){ selectedCells.delete(id); td.classList.remove('selected'); }
+            if(e.target.checked){ deselectedCells.delete(id); td.classList.add('selected'); }
+            else{ deselectedCells.add(id); td.classList.remove('selected'); }
           });
-          recalcSelected();
+          renderTable();
         });
       });
       table.querySelectorAll('.coef-input').forEach(inp => {
