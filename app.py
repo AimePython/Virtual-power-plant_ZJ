@@ -882,13 +882,16 @@ def _current_user():
 
 
 def _is_logged_in() -> bool:
-    return bool(session.get("user_id"))
+    return _current_user() is not None
 
 
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not _is_logged_in():
+        user = _current_user()
+        if user is None:
+            # Session may keep stale user_id after redeploy/db reset.
+            session.clear()
             return redirect(url_for("login_page"))
         return fn(*args, **kwargs)
 
